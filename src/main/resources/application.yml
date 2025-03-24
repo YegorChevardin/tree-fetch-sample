@@ -1,0 +1,27 @@
+spring:
+  data:
+    jpa:
+      show-sql: true
+      properties:
+        hibernate:
+          format_sql: true
+      hibernate:
+        ddl-auto: update
+    datasource:
+      url: jdbc:postgresql://localhost:5432/mydatabase
+      username: myuser
+      password: secret
+      driver-class-name: org.postgresql.Driver
+  docker:
+    compose:
+      enabled: true
+      lifecycle-management: start_only
+  flyway:
+    lockRetryCount: 120
+    locations: classpath:sql
+
+
+logging:
+    level:
+      org.hibernate.SQL: DEBUG
+      org.hibernate.type.descriptor.sql.BasicBinder: TRACE
