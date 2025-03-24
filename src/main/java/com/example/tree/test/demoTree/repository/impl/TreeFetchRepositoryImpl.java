@@ -22,78 +22,74 @@ public class TreeFetchRepositoryImpl implements TreeFetchRepository {
     public Page<ProjectEntity> findProjectTreePaginated(int limit, int offset) {
         Pageable pageable = PageRequest.of(offset / limit, limit);
         String query = """
-               WITH RECURSIVE
-                         -- First identify all root projects that qualify (have users or descendants with users)
-                         qualified_roots AS (
-                             SELECT p.id, p.name
-                             FROM projects p
-                             WHERE p.parent_id IS NULL
-                             AND (
-                                 -- Root has direct users
-                                 EXISTS (SELECT 1 FROM users u WHERE u.project_id = p.id)
-                                 OR
-                                 -- Or has any descendant with users (using efficient path check)
-                                 EXISTS (
-                                     WITH RECURSIVE descendant_check AS (
-                                         SELECT id FROM projects WHERE parent_id = p.id
-                                         UNION
-                                         SELECT child.id FROM projects child
-                                         JOIN descendant_check dc ON child.parent_id = dc.id
-                                     )
-                                     SELECT 1 FROM descendant_check dc
-                                     JOIN users u ON u.project_id = dc.id
-                                     LIMIT 1
-                                 )
-                             )
-                             ORDER BY p.name
-                         ),
-                         
-                         -- Get paginated root IDs only (this is where pagination happens)
-                         paginated_root_ids AS (
-                             SELECT id FROM qualified_roots
-                             LIMIT :limit OFFSET :offset
-                         ),
-                         
-                         -- Now get complete hierarchy for these paginated roots
-                         complete_hierarchy AS (
-                             -- Start with the paginated roots
-                             SELECT p.*
-                             FROM projects p
-                             JOIN paginated_root_ids pri ON p.id = pri.id
-                            \s
-                             UNION ALL
-                            \s
-                             -- Recursively get all descendants that either:
-                             -- 1. Have users directly, OR
-                             -- 2. Are ancestors of projects with users
-                             SELECT p.*
-                             FROM projects p
-                             JOIN complete_hierarchy ch ON p.parent_id = ch.id
-                             WHERE (
-                                 -- Project has users directly
-                                 EXISTS (SELECT 1 FROM users u WHERE u.project_id = p.id)
-                                 OR
-                                 -- Or leads to projects with users
-                                 EXISTS (
-                                     WITH RECURSIVE descendant_check AS (
-                                         SELECT id FROM projects WHERE parent_id = p.id
-                                         UNION
-                                         SELECT child.id FROM projects child
-                                         JOIN descendant_check dc ON child.parent_id = dc.id
-                                     )
-                                     SELECT 1 FROM descendant_check dc
-                                     JOIN users u ON u.project_id = dc.id
-                                     LIMIT 1
-                                 )
-                             )
-                         )
-                         
-                         -- Final results with proper ordering
-                         SELECT * FROM complete_hierarchy
-                         ORDER BY\s
-                             CASE WHEN parent_id IS NULL THEN id ELSE parent_id END,
-                             COALESCE(parent_id, '00000000-0000-0000-0000-000000000000'),\s
-                             name;
+              WITH\s
+                                  -- First get all projects with users
+                                  projects_with_users AS (
+                                      SELECT DISTINCT project_id\s
+                                      FROM users
+                                  ),
+                                  -- Get paginated root projects that qualify
+                                  paginated_roots AS (
+                                      SELECT p.id
+                                      FROM projects p
+                                      WHERE p.parent_id IS NULL
+                                      AND (
+                                          -- Root has users directly
+                                          p.id IN (SELECT project_id FROM projects_with_users)
+                                          OR
+                                          -- Or has children with users
+                                          EXISTS (
+                                              SELECT 1 FROM projects child
+                                              WHERE child.parent_id = p.id
+                                              AND child.id IN (SELECT project_id FROM projects_with_users)
+                                          )
+                                          OR
+                                          -- Or has grandchildren with users
+                                          EXISTS (
+                                              SELECT 1 FROM projects child
+                                              JOIN projects grandchild ON grandchild.parent_id = child.id
+                                              WHERE child.parent_id = p.id
+                                              AND grandchild.id IN (SELECT project_id FROM projects_with_users)
+                                          )
+                                      )
+                                      ORDER BY p.name
+                                      LIMIT :limit OFFSET :offset
+                                  )
+                                  
+                                  -- Get complete 3-level hierarchy for paginated roots
+                                  SELECT p.*
+                                  FROM projects p
+                                  WHERE\s
+                                      -- Include the paginated roots
+                                      p.id IN (SELECT id FROM paginated_roots)
+                                     \s
+                                      OR
+                                      -- Include their direct children that have users or have children with users
+                                      (
+                                          p.parent_id IN (SELECT id FROM paginated_roots)
+                                          AND (
+                                              p.id IN (SELECT project_id FROM projects_with_users)
+                                              OR EXISTS (
+                                                  SELECT 1 FROM projects child
+                                                  WHERE child.parent_id = p.id
+                                                  AND child.id IN (SELECT project_id FROM projects_with_users)
+                                              )
+                                          )
+                                      )
+                                     \s
+                                      OR
+                                      -- Include grandchildren that have users
+                                      (
+                                          p.parent_id IN (
+                                              SELECT id FROM projects\s
+                                              WHERE parent_id IN (SELECT id FROM paginated_roots)
+                                          )
+                                          AND p.id IN (SELECT project_id FROM projects_with_users)
+                                      )
+                                  ORDER BY\s
+                                      CASE WHEN parent_id IS NULL THEN id ELSE parent_id END,
+                                      COALESCE(parent_id, '00000000-0000-0000-0000-000000000000'),
+                                      name;
         """;
 
         Query queryResult = entityManager.createNativeQuery(query, ProjectEntity.class)
